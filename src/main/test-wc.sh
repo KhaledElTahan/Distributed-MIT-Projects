@@ -1,5 +1,8 @@
 #!/bin/bash
+export GOPATH=/c/projects/golabs-S2017/
 go run wc.go master sequential pg-*.txt
+dos2unix mr-testout.txt
+dos2unix mrtmp.wcseq
 sort -n -k2 mrtmp.wcseq | tail -10 | diff - mr-testout.txt > diff.out
 if [ -s diff.out ]
 then
