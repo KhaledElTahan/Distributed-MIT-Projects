@@ -19,12 +19,12 @@ import "sync"
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
 
-func TestInitialElection2A(t *testing.T) {
+func TestInitialElection3A(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2A): initial election ...\n")
+	fmt.Printf("Test (3A): initial election ...\n")
 
 	// is a leader elected?
 	cfg.checkOneLeader()
@@ -40,12 +40,12 @@ func TestInitialElection2A(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestReElection2A(t *testing.T) {
+func TestReElection3A(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2A): election after network failure ...\n")
+	fmt.Printf("Test (3A): election after network failure ...\n")
 
 	leader1 := cfg.checkOneLeader()
 
@@ -76,12 +76,12 @@ func TestReElection2A(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestBasicAgree2B(t *testing.T) {
+func TestBasicAgree3B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2B): basic agreement ...\n")
+	fmt.Printf("Test (3B): basic agreement ...\n")
 
 	iters := 3
 	for index := 1; index < iters+1; index++ {
@@ -99,12 +99,12 @@ func TestBasicAgree2B(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestFailAgree2B(t *testing.T) {
+func TestFailAgree3B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2B): agreement despite follower disconnection ...\n")
+	fmt.Printf("Test (3B): agreement despite follower disconnection ...\n")
 
 	cfg.one(101, servers)
 
@@ -130,12 +130,12 @@ func TestFailAgree2B(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestFailNoAgree2B(t *testing.T) {
+func TestFailNoAgree3B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2B): no agreement if too many followers disconnect ...\n")
+	fmt.Printf("Test (3B): no agreement if too many followers disconnect ...\n")
 
 	cfg.one(10, servers)
 
@@ -182,12 +182,12 @@ func TestFailNoAgree2B(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestConcurrentStarts2B(t *testing.T) {
+func TestConcurrentStarts3B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2B): concurrent Start()s ...\n")
+	fmt.Printf("Test (3B): concurrent Start()s ...\n")
 
 	var success bool
 loop:
@@ -283,12 +283,12 @@ loop:
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestRejoin2B(t *testing.T) {
+func TestRejoin3B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2B): rejoin of partitioned leader ...\n")
+	fmt.Printf("Test (3B): rejoin of partitioned leader ...\n")
 
 	cfg.one(101, servers)
 
@@ -321,12 +321,12 @@ func TestRejoin2B(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestBackup2B(t *testing.T) {
+func TestBackup3B(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2B): leader backs up quickly over incorrect follower logs ...\n")
+	fmt.Printf("Test (3B): leader backs up quickly over incorrect follower logs ...\n")
 
 	cfg.one(rand.Int(), servers)
 
@@ -393,12 +393,12 @@ func TestBackup2B(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestCount2B(t *testing.T) {
+func TestCount3B(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2B): RPC counts aren't too high ...\n")
+	fmt.Printf("Test (3B): RPC counts aren't too high ...\n")
 
 	rpcs := func() (n int) {
 		for j := 0; j < servers; j++ {
@@ -503,12 +503,12 @@ loop:
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestPersist12C(t *testing.T) {
+func TestPersist13C(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2C): basic persistence ...\n")
+	fmt.Printf("Test (3C): basic persistence ...\n")
 
 	cfg.one(11, servers)
 
@@ -549,12 +549,12 @@ func TestPersist12C(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestPersist22C(t *testing.T) {
+func TestPersist23C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2C): more persistence ...\n")
+	fmt.Printf("Test (3C): more persistence ...\n")
 
 	index := 1
 	for iters := 0; iters < 5; iters++ {
@@ -595,12 +595,12 @@ func TestPersist22C(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestPersist32C(t *testing.T) {
+func TestPersist33C(t *testing.T) {
 	servers := 3
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2C): partitioned leader and one follower crash, leader restarts ...\n")
+	fmt.Printf("Test (3C): partitioned leader and one follower crash, leader restarts ...\n")
 
 	cfg.one(101, 3)
 
@@ -635,12 +635,12 @@ func TestPersist32C(t *testing.T) {
 // The leader in a new term may try to finish replicating log entries that
 // haven't been committed yet.
 //
-func TestFigure82C(t *testing.T) {
+func TestFigure83C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, false)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2C): Figure 8 ...\n")
+	fmt.Printf("Test (3C): Figure 8 ...\n")
 
 	cfg.one(rand.Int(), 1)
 
@@ -691,12 +691,12 @@ func TestFigure82C(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestUnreliableAgree2C(t *testing.T) {
+func TestUnreliableAgree3C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2C): unreliable agreement ...\n")
+	fmt.Printf("Test (3C): unreliable agreement ...\n")
 
 	var wg sync.WaitGroup
 
@@ -720,12 +720,12 @@ func TestUnreliableAgree2C(t *testing.T) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestFigure8Unreliable2C(t *testing.T) {
+func TestFigure8Unreliable3C(t *testing.T) {
 	servers := 5
 	cfg := make_config(t, servers, true)
 	defer cfg.cleanup()
 
-	fmt.Printf("Test (2C): Figure 8 (unreliable) ...\n")
+	fmt.Printf("Test (3C): Figure 8 (unreliable) ...\n")
 
 	cfg.one(rand.Int()%10000, 1)
 
@@ -920,10 +920,10 @@ func internalChurn(t *testing.T, unreliable bool) {
 	fmt.Printf("  ... Passed\n")
 }
 
-func TestReliableChurn2C(t *testing.T) {
+func TestReliableChurn3C(t *testing.T) {
 	internalChurn(t, false)
 }
 
-func TestUnreliableChurn2C(t *testing.T) {
+func TestUnreliableChurn3C(t *testing.T) {
 	internalChurn(t, true)
 }
