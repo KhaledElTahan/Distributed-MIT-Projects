@@ -95,8 +95,43 @@ type AppendEntriesArgs struct {
 // field names must start with capital letters!
 //
 type AppendEntriesReply struct {
-	Term    int  // currentTerm for leader to update itself
-	Success bool // true if follower contained entry matching PrevLogIndex & PrevLogTerm
+	Term                    int  // currentTerm for leader to update itself
+	Success                 bool // true if follower contained entry matching PrevLogIndex & PrevLogTerm
+	ConflictTerm            int  // The Conflicting Term for that makes non-agreement
+	ConflictTermStartingIdx int  // The starting index of the conflict term interval
+}
+
+//
+// Handles when there're entries to append
+//
+func handleAppendEntries(rf *Raft, args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	if args.PrevLogIndex >= len(rf.log) {
+		reply.Success = false
+	} else {
+		if args.PrevLogIndex == -1 {
+			reply.Success = true
+
+			rf.log = args.Entries
+		} else {
+			myTerm := rf.log[args.PrevLogIndex].Term
+
+			if myTerm == args.PrevLogTerm {
+				reply.Success = true
+				rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...) // here
+			} else {
+				reply.Success = false
+				reply.ConflictTerm = myTerm
+
+				for i := args.PrevLogIndex; i >= 0; i-- {
+					if rf.log[args.PrevLogIndex].Term == myTerm {
+						reply.ConflictTermStartingIdx = i
+					} else {
+						break
+					}
+				}
+			}
+		}
+	}
 }
 
 //
@@ -107,16 +142,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// 3A Section
 	rf.mu.Lock()
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.currentTerm { // Leader Failure !
 		reply.Success = false
 		reply.Term = rf.currentTerm
+
 	} else {
-		reply.Success = true
+		reply.Term = args.Term     // Tell leader there's no leader failure even if success if false
+		rf.currentTerm = args.Term // Just in case
+
 		rf.receivedHeartBeat = true
 		rf.votedFor = -1
 		rf.leaderId = args.LeaderId
 		DPrintf("Heartbeat from leader(%d) to (%d)\n", args.LeaderId, rf.me)
+
+		if args.Entries != nil {
+			handleAppendEntries(rf, args, reply)
+		} else {
+			reply.Success = true
+		}
 	}
+
 	rf.mu.Unlock()
 }
 
@@ -124,7 +169,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // handles an outgoing RPC "Sender"
 // The leader is the only sender "Either Fresh or stale"
 //
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, heartbeat bool) bool {
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, entries []LogElement) bool {
 	// 3A Section
 
 	rf.mu.RLock()
@@ -133,8 +178,17 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	rf.mu.RUnlock()
 
 	// 3B
-	if !heartbeat {
+	if entries != nil {
+		args.PrevLogIndex = rf.nextIndex[server] - 2
 
+		if args.PrevLogIndex != -1 {
+			args.PrevLogTerm = rf.log[args.PrevLogIndex].Term
+		} else {
+			args.PrevLogTerm = 0 // Will happen only on first append entry
+		}
+
+		args.Entries = entries
+		args.LeaderCommit = rf.commitIndex
 	}
 
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
@@ -205,6 +259,25 @@ type RequestVoteReply struct {
 }
 
 //
+// Checks if the candidate log is up to date with or more up to date than the Voter's
+//
+func isUpToDate(candidateLastIndex int, candidateLastTerm int, voterLastIndex int, voterLastTerm int) bool {
+	if candidateLastTerm == voterLastTerm {
+		if candidateLastIndex >= voterLastIndex {
+			return true
+		} else {
+			return false
+		}
+	} else {
+		if candidateLastTerm >= voterLastTerm {
+			return true
+		} else {
+			return false
+		}
+	}
+}
+
+//
 // example RequestVote RPC handler.
 // handles an incoming RPC
 //
@@ -221,8 +294,15 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
+	// 3B Section
+	myLastIndex := len(rf.log) - 1
+	myLastTerm := 0
+	if myLastIndex != -1 {
+		myLastTerm = rf.log[myLastIndex].Term
+	}
+
 	// 3A Section
-	if args.Term < rf.currentTerm || (args.Term == rf.currentTerm && rf.votedFor != -1) {
+	if args.Term < rf.currentTerm || rf.votedFor != -1 || !isUpToDate(args.LastLogIndex, args.LastLogTerm, myLastIndex, myLastTerm) {
 		reply.VoteGranted = false
 		reply.Term = rf.currentTerm
 
@@ -274,6 +354,13 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	rf.mu.RLock()
 	args.CandidateId = rf.me
 	args.Term = rf.currentTerm
+	args.LastLogIndex = len(rf.log) - 1
+	args.LastLogTerm = 0
+
+	if args.LastLogIndex != -1 {
+		args.LastLogTerm = rf.log[args.LastLogIndex].Term
+	}
+
 	rf.mu.RUnlock()
 
 	if rf.receivedHeartBeat {
@@ -340,12 +427,27 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// 3A Section
 	rf.serverState = followerState
-	rf.currentTerm = 0
+	rf.currentTerm = 0 //Persistent ?!
 	rf.votedFor = -1
 	rf.receivedHeartBeat = false
 
+	// 3B Section
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.nextIndex = make([]int, len(rf.peers))
+
+	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = 0
+	}
+
+	rf.matchIndex = make([]int, len(rf.peers))
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = len(rf.log) + 1
+	}
 
 	go runSever(rf)
 
@@ -518,12 +620,12 @@ func runLeader(rf *Raft) {
 			go func(server int, rf *Raft, stepDownLock *sync.RWMutex) {
 				aea := &AppendEntriesArgs{}
 				aer := &AppendEntriesReply{}
-				ok := rf.sendAppendEntries(server, aea, aer, true)
+				ok := rf.sendAppendEntries(server, aea, aer, nil)
 				DPrintf("(%d): GO sendAppendEntries to (%d)\n", rf.me, server)
 
 				if ok {
 					rf.mu.Lock()
-					if !aer.Success {
+					if !aer.Success && aer.Term != rf.currentTerm { // Only on leader failure
 						rf.currentTerm = aer.Term
 						stepDownLock.Lock()
 						stepDown = true
