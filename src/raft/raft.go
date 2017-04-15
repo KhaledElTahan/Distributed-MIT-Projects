@@ -127,8 +127,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, heartbeat bool) bool {
 	// 3A Section
 
+	rf.mu.RLock()
 	args.Term = rf.currentTerm
 	args.LeaderId = rf.me
+	rf.mu.RUnlock()
 
 	// 3B
 	if !heartbeat {
@@ -233,6 +235,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.currentTerm = args.Term
 	rf.votedFor = args.CandidateId
 	reply.VoteGranted = true
+
 	rf.mu.Unlock()
 }
 
@@ -271,10 +274,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	rf.mu.RLock()
 	args.CandidateId = rf.me
 	args.Term = rf.currentTerm
+	rf.mu.RUnlock()
+
 	if rf.receivedHeartBeat {
 		return false
 	}
-	rf.mu.RUnlock()
 
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 
@@ -356,7 +360,6 @@ const (
 	maximumElectionTimeout  = 600
 	requestVoteReplyTimeout = 300
 	heartbeatTimeInterval   = 110
-	heartbeatReplyTimeout   = 20
 )
 
 func getRandElectionTimeout() time.Duration {
@@ -421,45 +424,60 @@ func runCandidate(rf *Raft) {
 		rf.currentTerm++
 		rf.votedFor = rf.me
 
-		replies := make([]*RequestVoteReply, len(rf.peers))
-
 		votedToMe := 1
+		stepDown := false
+		stepDownLock := &sync.RWMutex{}
 		for server, _ := range rf.peers {
 			if server == rf.me {
 				continue
 			}
 
-			rva := &RequestVoteArgs{}
-			replies[server] = &RequestVoteReply{0, false}
+			go func(server int, rf *Raft, stepDownLock *sync.RWMutex) {
+				rva := &RequestVoteArgs{}
+				rvp := &RequestVoteReply{}
+				ok := rf.sendRequestVote(server, rva, rvp)
+				DPrintf("(%d): GO sendRequestVote to (%d)\n", rf.me, server)
+				if ok {
+					rf.mu.Lock()
+					if rvp.VoteGranted {
+						DPrintf("(%d): I received vote from (%d)\n", rf.me, server)
+						votedToMe++
+					} else if rvp.Term > rf.currentTerm {
+						rf.currentTerm = rvp.Term
+						stepDownLock.Lock()
+						stepDown = true
+						stepDownLock.Unlock()
+					}
+					rf.mu.Unlock()
+				}
 
-			go rf.sendRequestVote(server, rva, replies[server])
+			}(server, rf, stepDownLock)
+
+			stepDownLock.RLock()
+			if stepDown {
+				stepDownLock.RUnlock()
+				break
+			}
+			stepDownLock.RUnlock()
 		}
 		rf.mu.Unlock()
+
 		time.Sleep(time.Duration(requestVoteReplyTimeout) * time.Millisecond)
-		rf.mu.RLock()
-		for server, _ := range replies {
-			if server == rf.me {
-				continue
-			}
 
-			if replies[server].VoteGranted {
-				DPrintf("(%d): I received vote from (%d)\n", rf.me, server)
-				votedToMe++
-			} else if replies[server].Term > rf.currentTerm {
-				rf.currentTerm = replies[server].Term
-
-				stepDownToFollower(rf)
-				return
-			}
+		stepDownLock.RLock()
+		if stepDown {
+			stepDownLock.RUnlock()
+			stepDownToFollower(rf)
+			stepDownLock.RUnlock()
 		}
 
+		rf.mu.RLock()
 		DPrintf("(%d) Number of who voted to me (%d)\n", rf.me, votedToMe)
-		rf.mu.RUnlock()
-
 		if rf.receivedHeartBeat {
 			stepDownToFollower(rf)
 			return
 		}
+		rf.mu.RUnlock()
 
 		rf.mu.Lock()
 		if votedToMe > (len(rf.peers) / 2) {
@@ -480,44 +498,52 @@ func runCandidate(rf *Raft) {
 }
 
 func runLeader(rf *Raft) {
-	DPrintf("%d is Leader Iteration\n", rf.me)
-	// Can't pass this lock :D
 	rf.mu.Lock()
+
+	DPrintf("%d is Leader Iteration\n", rf.me)
+
 	if rf.receivedHeartBeat {
 		rf.mu.Unlock()
 		stepDownToFollower(rf)
 		return
 	} else {
-		replies := make([]*AppendEntriesReply, len(rf.peers))
+		stepDown := false
+		stepDownLock := &sync.RWMutex{}
+
 		for server, _ := range rf.peers {
 			if server == rf.me {
 				continue
 			}
 
-			aea := &AppendEntriesArgs{}
-			replies[server] = &AppendEntriesReply{-1, false}
+			go func(server int, rf *Raft, stepDownLock *sync.RWMutex) {
+				aea := &AppendEntriesArgs{}
+				aer := &AppendEntriesReply{}
+				ok := rf.sendAppendEntries(server, aea, aer, true)
+				DPrintf("(%d): GO sendAppendEntries to (%d)\n", rf.me, server)
 
-			go rf.sendAppendEntries(server, aea, replies[server], true)
+				if ok {
+					rf.mu.Lock()
+					if !aer.Success {
+						rf.currentTerm = aer.Term
+						stepDownLock.Lock()
+						stepDown = true
+						stepDownLock.Unlock()
+					}
+					rf.mu.Unlock()
+				}
+			}(server, rf, stepDownLock)
 		}
 
 		rf.mu.Unlock()
-		time.Sleep(time.Duration(requestVoteReplyTimeout) * time.Millisecond)
-		rf.mu.Lock()
 
-		for server, _ := range replies {
-			if server == rf.me {
-				continue
-			}
-
-			if replies[server].Term != -1 && !replies[server].Success {
-				rf.currentTerm = replies[server].Term
-				rf.mu.Unlock()
-				stepDownToFollower(rf)
-				return
-			}
+		stepDownLock.RLock()
+		if stepDown {
+			stepDownLock.RUnlock()
+			stepDownToFollower(rf)
+			return
 		}
+		stepDownLock.RUnlock()
 
-		time.Sleep(time.Duration(heartbeatTimeInterval-requestVoteReplyTimeout) * time.Millisecond)
+		time.Sleep(time.Duration(heartbeatTimeInterval) * time.Millisecond)
 	}
-	rf.mu.Unlock()
 }
