@@ -549,9 +549,7 @@ func applyCommitted(rf *Raft) {
 		DPrintf("Me(%d) Apply Command(%d) of Term(%d) & Index(%d)\n", rf.me, rf.log[i].Command, rf.log[i].Term, i)
 		msg := ApplyMsg{Command: rf.log[i].Command, Index: i + 1}
 		rf.lastApplied++
-		//rf.mu.Unlock()
 		rf.applyCh <- msg
-		//rf.mu.Lock()
 	}
 	rf.mu.Unlock()
 }
@@ -714,7 +712,11 @@ func runLeader(rf *Raft) {
 						rf.currentTerm = aer.Term
 						stepDownLock.Lock()
 						stepDown = true
+						rf.serverState = followerState
+						rf.votedFor = -1
 						stepDownLock.Unlock()
+						rf.mu.Unlock()
+						return
 					} else {
 						if aer.Conflict {
 							if aer.LogLength != -1 {
@@ -850,7 +852,7 @@ func sendLogEntriesToOneServer(rf *Raft, server int, stepDown *bool, stepDownLoc
 		}
 
 		stepDownLock.RLock()
-		//fmt.Println(rf.me, rf.nextIndex[server], len(rf.log), rf.serverState, rf.receivedHeartBeat, *stepDown)
+		DPrintf("%d %d %d %d %d %d\n", rf.me, rf.nextIndex[server], len(rf.log), rf.serverState, rf.receivedHeartBeat, *stepDown)
 		stepDownLock.RUnlock()
 
 		entries := rf.log[rf.nextIndex[server]:]
