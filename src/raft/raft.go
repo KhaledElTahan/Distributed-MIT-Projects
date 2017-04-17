@@ -217,7 +217,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 		}
 	}
 
-	if rf.serverState != leaderState {
+	if rf.serverState != leaderState || rf.receivedHeartBeat {
 		rf.mu.RUnlock()
 		return false
 	}
