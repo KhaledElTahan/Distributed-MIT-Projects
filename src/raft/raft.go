@@ -805,6 +805,11 @@ func sendLogEntries(rf *Raft) {
 		return
 	}
 
+	if rf.receivedHeartBeat {
+		rf.mu.Unlock()
+		return
+	}
+
 	updateLeaderCommitIndex(rf)
 	stepDown := false
 	stepDownLock := &sync.RWMutex{}
@@ -820,7 +825,7 @@ func sendLogEntries(rf *Raft) {
 		}
 
 		stepDownLock.RLock()
-		if stepDown {
+		if stepDown || rf.receivedHeartBeat {
 			stepDownLock.RUnlock()
 			stepDownToFollower(rf)
 			return
@@ -838,9 +843,11 @@ func sendLogEntriesToOneServer(rf *Raft, server int, stepDown *bool, stepDownLoc
 		aer := &AppendEntriesReply{}
 		rf.mu.Lock()
 
-		if rf.serverState != leaderState {
+		if rf.serverState != leaderState || rf.receivedHeartBeat {
 			stepDownLock.Lock()
 			*stepDown = true
+			rf.serverState = followerState
+			rf.votedFor = -1
 			stepDownLock.Unlock()
 			rf.mu.Unlock()
 			break
