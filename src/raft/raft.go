@@ -196,7 +196,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 //
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, entries []LogElement) bool {
 
-	rf.mu.RLock()
+	rf.mu.Lock()
 	args.Term = rf.currentTerm
 	args.LeaderId = rf.me
 
@@ -218,11 +218,11 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	}
 
 	if rf.serverState != leaderState || rf.receivedHeartBeat {
-		rf.mu.RUnlock()
+		rf.mu.Unlock()
 		return false
 	}
 
-	rf.mu.RUnlock()
+	rf.mu.Unlock()
 
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
@@ -232,10 +232,10 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
-	rf.mu.RLock()
+	rf.mu.Lock()
 	var term = rf.currentTerm
 	var isleader = (rf.serverState == leaderState)
-	rf.mu.RUnlock()
+	rf.mu.Unlock()
 
 	return term, isleader
 }
@@ -375,7 +375,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
 
-	rf.mu.RLock()
+	rf.mu.Lock()
 
 	args.CandidateId = rf.me
 	args.Term = rf.currentTerm
@@ -387,11 +387,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	}
 
 	if rf.receivedHeartBeat {
-		rf.mu.RUnlock()
+		rf.mu.Unlock()
 		return false
 	}
 
-	rf.mu.RUnlock()
+	rf.mu.Unlock()
 
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 
@@ -528,15 +528,15 @@ func runSever(rf *Raft) {
 		} else {
 			go applyCommitted(rf)
 		}
-		rf.mu.RLock()
+		rf.mu.Lock()
 		if rf.serverState == followerState {
-			rf.mu.RUnlock()
+			rf.mu.Unlock()
 			runFollower(rf)
 		} else if rf.serverState == candidateState {
-			rf.mu.RUnlock()
+			rf.mu.Unlock()
 			runCandidate(rf)
 		} else if rf.serverState == leaderState {
-			rf.mu.RUnlock()
+			rf.mu.Unlock()
 			runLeader(rf)
 		}
 	}
@@ -563,17 +563,17 @@ func stepDownToFollower(rf *Raft) {
 }
 
 func runFollower(rf *Raft) {
-	rf.mu.RLock()
+	rf.mu.Lock()
 	DPrintf("%d is Follower\n", rf.me)
 	printLog(rf.me, rf.log)
 	if rf.receivedHeartBeat {
-		rf.mu.RUnlock()
+		rf.mu.Unlock()
 		rf.mu.Lock()
 		rf.receivedHeartBeat = false
 		rf.mu.Unlock()
 		time.Sleep(getRandElectionTimeout() * time.Millisecond)
 	} else {
-		rf.mu.RUnlock()
+		rf.mu.Unlock()
 		rf.mu.Lock()
 		rf.serverState = candidateState
 		rf.mu.Unlock()
@@ -621,32 +621,32 @@ func runCandidate(rf *Raft) {
 
 			}(server, rf, stepDownLock)
 
-			stepDownLock.RLock()
+			stepDownLock.Lock()
 			if stepDown {
-				stepDownLock.RUnlock()
+				stepDownLock.Unlock()
 				break
 			}
-			stepDownLock.RUnlock()
+			stepDownLock.Unlock()
 		}
 		rf.mu.Unlock()
 
 		time.Sleep(time.Duration(requestVoteReplyTimeout) * time.Millisecond)
 
-		stepDownLock.RLock()
+		stepDownLock.Lock()
 		if stepDown {
-			stepDownLock.RUnlock()
+			stepDownLock.Unlock()
 			stepDownToFollower(rf)
 			return
 		}
-		stepDownLock.RUnlock()
+		stepDownLock.Unlock()
 
-		rf.mu.RLock()
+		rf.mu.Lock()
 		if rf.receivedHeartBeat {
-			rf.mu.RUnlock()
+			rf.mu.Unlock()
 			stepDownToFollower(rf)
 			return
 		}
-		rf.mu.RUnlock()
+		rf.mu.Unlock()
 
 		rf.mu.Lock()
 		if votedToMe > (len(rf.peers) / 2) {
@@ -699,9 +699,9 @@ func runLeader(rf *Raft) {
 				aea := &AppendEntriesArgs{}
 				aer := &AppendEntriesReply{}
 
-				rf.mu.RLock()
+				rf.mu.Lock()
 				aea.LeaderCommit = rf.commitIndex
-				rf.mu.RUnlock()
+				rf.mu.Unlock()
 
 				ok := rf.sendAppendEntries(server, aea, aer, nil)
 				//			DPrintf("(%d): GO sendAppendEntries to (%d)\n", rf.me, server)
@@ -758,18 +758,17 @@ func runLeader(rf *Raft) {
 
 		rf.mu.Unlock()
 
-		stepDownLock.RLock()
+		stepDownLock.Lock()
 		if stepDown {
-			stepDownLock.RUnlock()
+			stepDownLock.Unlock()
 			stepDownToFollower(rf)
 			return
 		}
-		stepDownLock.RUnlock()
+		stepDownLock.Unlock()
 
+		sendLogEntries(rf)
 		time.Sleep(time.Duration(heartbeatTimeInterval) * time.Millisecond)
 	}
-
-	sendLogEntries(rf)
 }
 
 func updateLeaderCommitIndex(rf *Raft) {
@@ -824,15 +823,15 @@ func sendLogEntries(rf *Raft) {
 			go sendLogEntriesToOneServer(rf, i, &stepDown, stepDownLock)
 		}
 
-		stepDownLock.RLock()
+		stepDownLock.Lock()
 		if stepDown || rf.receivedHeartBeat {
-			stepDownLock.RUnlock()
+			stepDownLock.Unlock()
+			rf.mu.Unlock()
 			stepDownToFollower(rf)
 			return
 		}
-		stepDownLock.RUnlock()
+		stepDownLock.Unlock()
 	}
-
 	rf.mu.Unlock()
 }
 
@@ -858,11 +857,13 @@ func sendLogEntriesToOneServer(rf *Raft, server int, stepDown *bool, stepDownLoc
 			break
 		}
 
-		stepDownLock.RLock()
+		stepDownLock.Lock()
 		DPrintf("%d %d %d %d %d %d\n", rf.me, rf.nextIndex[server], len(rf.log), rf.serverState, rf.receivedHeartBeat, *stepDown)
-		stepDownLock.RUnlock()
+		stepDownLock.Unlock()
 
-		entries := rf.log[rf.nextIndex[server]:]
+		var entries []LogElement
+		entries = make([]LogElement, len(rf.log[rf.nextIndex[server]:]))
+		copy(entries, rf.log[rf.nextIndex[server]:])
 
 		aea.PrevLogIndex = rf.nextIndex[server] - 1
 
