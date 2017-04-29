@@ -385,9 +385,25 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		myLastTerm = rf.Log[myLastIndex].Term
 	}
 
-	noVotingConditions := args.Term < rf.CurrentTerm ||
-		(rf.VotedFor != -1 && args.Term == rf.CurrentTerm) ||
-		!isUpToDate(args.LastLogIndex, args.LastLogTerm, myLastIndex, myLastTerm)
+	firstCond := args.Term <= rf.CurrentTerm
+	secondCond := rf.VotedFor != -1
+	thirdCond := !isUpToDate(args.LastLogIndex, args.LastLogTerm, myLastIndex, myLastTerm)
+
+	noVotingConditions := firstCond || secondCond || thirdCond
+
+	if args.Term > rf.CurrentTerm {
+		rf.CurrentTerm = args.Term
+
+		if rf.serverState == leaderState { // This is leader and another inconsistent high term asks me for vote
+			rf.serverState = followerState
+			rf.receivedHeartBeat = true
+			rf.VotedFor = -1
+		}
+
+		if noVotingConditions {
+			rf.persist()
+		}
+	}
 
 	if noVotingConditions {
 		reply.VoteGranted = false
@@ -723,11 +739,10 @@ func runCandidate(rf *Raft) {
 			rf.mu.Unlock()
 			runLeader(rf)
 			return
-		} else { // Lost Election or Split Vote
-			rf.CurrentTerm-- //so next iteration if I become candidate term doesn't go infinite
 		}
 
 		rf.VotedFor = -1
+		rf.persist()
 		rf.mu.Unlock()
 
 		time.Sleep(getRandElectionTimeout() * time.Millisecond)
@@ -754,80 +769,7 @@ func runLeader(rf *Raft) {
 		stepDownToFollower(rf)
 		return
 	} else {
-		stepDown := false
-		stepDownLock := &sync.RWMutex{}
-
-		for server, _ := range rf.peers {
-			if server == rf.me {
-				continue
-			}
-
-			go func(server int, rf *Raft, stepDownLock *sync.RWMutex) {
-				aea := &AppendEntriesArgs{}
-				aer := &AppendEntriesReply{}
-
-				ok := rf.sendAppendEntries(server, aea, aer, nil)
-
-				if ok {
-					rf.mu.Lock()
-					if !aer.Success { // Only on leader failure
-						if aer.Term > rf.CurrentTerm {
-							rf.CurrentTerm = aer.Term
-						}
-
-						stepDownLock.Lock()
-						stepDown = true
-						rf.serverState = followerState
-						rf.VotedFor = -1
-						rf.persist()
-						stepDownLock.Unlock()
-						rf.mu.Unlock()
-						return
-					} else {
-						if aer.Conflict {
-							if aer.LogLength != -1 {
-								rf.nextIndex[server] = min(aer.LogLength, rf.nextIndex[server])
-							} else {
-								change := false
-
-								if aer.ConflictTermStartingIdx < 0 {
-									aer.ConflictTermStartingIdx = 0
-								}
-
-								for i := len(rf.Log) - 1; i >= aer.ConflictTermStartingIdx; i-- {
-									if rf.Log[i].Term == aer.ConflictTerm { // Match -> No conflict from this point
-										rf.nextIndex[server] = i + 1
-										change = true
-										break
-									}
-								}
-
-								if !change {
-									rf.nextIndex[server] = aer.ConflictTermStartingIdx
-								}
-							}
-						} else { // Everything is perfect
-							rf.nextIndex[server] = min(aea.PrevLogIndex+1, rf.nextIndex[server])
-							if aea.PrevLogIndex > rf.matchIndex[server] {
-								rf.matchIndex[server] = aea.PrevLogIndex
-							}
-						}
-					}
-
-					rf.mu.Unlock()
-				}
-			}(server, rf, stepDownLock)
-		}
-
 		rf.mu.Unlock()
-
-		stepDownLock.Lock()
-		if stepDown {
-			stepDownLock.Unlock()
-			stepDownToFollower(rf)
-			return
-		}
-		stepDownLock.Unlock()
 
 		sendLogEntries(rf)
 
@@ -892,106 +834,93 @@ func sendLogEntries(rf *Raft) {
 			continue
 		}
 
-		if rf.nextIndex[i] < len(rf.Log) { // NextIndex initialy = len(rf.Log)
-			DPrintf("Server(%d) NextIndex(%d) LenOfLeaderLog(%d)\n", i, rf.nextIndex[i], len(rf.Log))
-			DPrintf("SEND LOG ENTRIES FROM LEADER (%d) to (%d) Command (%d) Term (%d) \n", rf.me, i, rf.Log[rf.nextIndex[i]].Command, rf.Log[rf.nextIndex[i]].Term)
-			go sendLogEntriesToOneServer(rf, i)
-		}
+		go sendLogEntriesToOneServer(rf, i)
 	}
 	rf.mu.Unlock()
 }
 
 func sendLogEntriesToOneServer(rf *Raft, server int) {
 
-	for {
-		aea := &AppendEntriesArgs{}
-		aer := &AppendEntriesReply{}
-		rf.mu.Lock()
+	aea := &AppendEntriesArgs{}
+	aer := &AppendEntriesReply{}
+	rf.mu.Lock()
 
-		if rf.serverState != leaderState || rf.receivedHeartBeat {
+	if rf.serverState != leaderState || rf.receivedHeartBeat {
+		rf.serverState = followerState
+		rf.VotedFor = -1
+		rf.persist()
+		rf.mu.Unlock()
+		return
+	}
+
+	DPrintf("%d %d %d %d %d\n", rf.me, rf.nextIndex[server], len(rf.Log), rf.serverState, rf.receivedHeartBeat)
+
+	var entries []LogElement
+
+	if len(rf.Log) > rf.nextIndex[server] {
+		entries = make([]LogElement, len(rf.Log[rf.nextIndex[server]:]))
+		copy(entries, rf.Log[rf.nextIndex[server]:])
+	} else {
+		entries = nil
+	}
+
+	aea.PrevLogIndex = rf.nextIndex[server] - 1
+	aea.PrevLogTerm = 0
+
+	if aea.PrevLogIndex != -1 {
+		aea.PrevLogTerm = rf.Log[aea.PrevLogIndex].Term //might has changed
+	}
+
+	futureNextIndex := len(rf.Log) - 1
+	rf.mu.Unlock()
+
+	ok := rf.sendAppendEntries(server, aea, aer, entries)
+
+	rf.mu.Lock()
+	if ok {
+		if !aer.Success { // Leader Failure
+			if aer.Term > rf.CurrentTerm {
+				rf.CurrentTerm = aer.Term
+			}
 			rf.serverState = followerState
 			rf.VotedFor = -1
 			rf.persist()
-			rf.mu.Unlock()
-			break
-		}
+		} else {
+			if aer.Conflict {
+				// Two cases to consider
+				if aer.LogLength != -1 {
+					rf.nextIndex[server] = min(aer.LogLength, rf.nextIndex[server])
 
-		if rf.nextIndex[server] == len(rf.Log) { // NextIndex initialy = len(rf.Log)
-			rf.mu.Unlock()
-			break
-		}
+					// RETRY
+				} else {
+					change := false
 
-		DPrintf("%d %d %d %d %d\n", rf.me, rf.nextIndex[server], len(rf.Log), rf.serverState, rf.receivedHeartBeat)
-
-		var entries []LogElement
-		entries = make([]LogElement, len(rf.Log[rf.nextIndex[server]:]))
-		copy(entries, rf.Log[rf.nextIndex[server]:])
-
-		aea.PrevLogIndex = rf.nextIndex[server] - 1
-		aea.PrevLogTerm = 0
-
-		if aea.PrevLogIndex != -1 {
-			aea.PrevLogTerm = rf.Log[aea.PrevLogIndex].Term //might has changed
-		}
-
-		futureNextIndex := len(rf.Log) - 1
-		rf.mu.Unlock()
-
-		ok := rf.sendAppendEntries(server, aea, aer, entries)
-
-		rf.mu.Lock()
-		if ok {
-			if !aer.Success { // Leader Failure
-				rf.CurrentTerm = aer.Term
-				rf.serverState = followerState
-				rf.VotedFor = -1
-				rf.persist()
-				rf.mu.Unlock()
-				break
-			} else {
-				if aer.Conflict {
-					// Two cases to consider
-					if aer.LogLength != -1 {
-						rf.nextIndex[server] = min(aer.LogLength, rf.nextIndex[server])
-
-						// RETRY
-					} else {
-						change := false
-
-						if aer.ConflictTermStartingIdx < 0 {
-							aer.ConflictTermStartingIdx = 0
-						}
-
-						for i := len(rf.Log) - 1; i >= aer.ConflictTermStartingIdx; i-- {
-							if rf.Log[i].Term == aer.ConflictTerm { // Match
-								rf.nextIndex[server] = i + 1
-								change = true
-								break
-							}
-						}
-
-						if !change {
-							rf.nextIndex[server] = aer.ConflictTermStartingIdx
-						}
-
-						//RETRY
+					if aer.ConflictTermStartingIdx < 0 {
+						aer.ConflictTermStartingIdx = 0
 					}
-				} else { // Everything is fine
-					rf.nextIndex[server] = min(futureNextIndex+1, rf.nextIndex[server])
 
-					if rf.matchIndex[server] < futureNextIndex {
-						rf.matchIndex[server] = futureNextIndex
+					for i := len(rf.Log) - 1; i >= aer.ConflictTermStartingIdx; i-- {
+						if rf.Log[i].Term == aer.ConflictTerm { // Match
+							rf.nextIndex[server] = i + 1
+							change = true
+							break
+						}
 					}
-					rf.mu.Unlock()
 
-					break
+					if !change {
+						rf.nextIndex[server] = aer.ConflictTermStartingIdx
+					}
+
+					//RETRY
+				}
+			} else { // Everything is fine
+				rf.nextIndex[server] = min(futureNextIndex+1, rf.nextIndex[server])
+
+				if rf.matchIndex[server] < futureNextIndex {
+					rf.matchIndex[server] = futureNextIndex
 				}
 			}
-
-		} else { // Disconnection indication
-			rf.mu.Unlock()
-			break
 		}
-		rf.mu.Unlock()
 	}
+	rf.mu.Unlock()
 }
