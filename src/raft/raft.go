@@ -124,7 +124,7 @@ func needsChange(rf *Raft, entries []LogElement, startingIdx int) bool {
 	}
 
 	for i := 0; i < len(entries); i++ {
-		if rf.Log[i+startingIdx].Term < entries[i].Term || rf.Log[i+startingIdx].Command != entries[i].Command {
+		if rf.Log[i+startingIdx].Term != entries[i].Term || rf.Log[i+startingIdx].Command != entries[i].Command {
 			if rf.CommitIndex >= i+startingIdx {
 				fmt.Printf("PROBLEM(%d): Old Command(%d) Old Term(%d), New Command(%d) New Term(%d)\n", startingIdx, rf.Log[i+startingIdx].Command, rf.Log[i+startingIdx].Term, entries[i].Command, entries[i].Term)
 			}
@@ -156,13 +156,13 @@ func handleAppendEntries(rf *Raft, args *AppendEntriesArgs, reply *AppendEntries
 			if needsChange(rf, args.Entries, 0) {
 				rf.Log = args.Entries
 
-				if args.LeaderCommit > rf.CommitIndex {
-					rf.CommitIndex = min(len(rf.Log)-1, args.LeaderCommit)
-				}
-
 				if args.Entries != nil {
 					*change = true
 				}
+			}
+
+			if args.LeaderCommit > rf.CommitIndex {
+				rf.CommitIndex = min(len(rf.Log)-1, args.LeaderCommit)
 			}
 
 		} else {
@@ -174,13 +174,13 @@ func handleAppendEntries(rf *Raft, args *AppendEntriesArgs, reply *AppendEntries
 				if needsChange(rf, args.Entries, args.PrevLogIndex+1) {
 					rf.Log = append(rf.Log[:args.PrevLogIndex+1], args.Entries...)
 
-					if args.LeaderCommit > rf.CommitIndex {
-						rf.CommitIndex = min(len(rf.Log)-1, args.LeaderCommit)
-					}
-
 					if args.Entries != nil {
 						*change = true
 					}
+				}
+
+				if args.LeaderCommit > rf.CommitIndex {
+					rf.CommitIndex = min(len(rf.Log)-1, args.LeaderCommit)
 				}
 
 			} else {
@@ -241,7 +241,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	rf.mu.Unlock()
 
-	go applyCommitted(rf) // FIX :: run time out of bounds related to line 554
+	go applyCommitted(rf)
 }
 
 //
@@ -306,8 +306,6 @@ func (rf *Raft) persist() {
 	e.Encode(rf.CurrentTerm)
 	e.Encode(rf.VotedFor)
 	e.Encode(rf.Log)
-	//e.Encode(rf.CommitIndex)
-	//e.Encode(rf.LastApplied)
 
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
@@ -328,8 +326,6 @@ func (rf *Raft) readPersist(data []byte) {
 	d.Decode(&rf.CurrentTerm)
 	d.Decode(&rf.VotedFor)
 	d.Decode(&rf.Log)
-	//d.Decode(&rf.CommitIndex)
-	//d.Decode(&rf.LastApplied)
 }
 
 //
@@ -394,7 +390,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if args.Term > rf.CurrentTerm {
 		rf.CurrentTerm = args.Term
 
-		if rf.serverState == leaderState { // This is leader and another inconsistent high term asks me for vote
+		if rf.serverState == leaderState {
 			rf.serverState = followerState
 			rf.receivedHeartBeat = true
 			rf.VotedFor = -1
@@ -507,7 +503,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term := -1
 	isLeader := true
 
-	// Your code here (3B).
 	rf.mu.Lock()
 
 	if rf.serverState == leaderState {
@@ -557,13 +552,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 
-	// 3A Section
 	rf.serverState = followerState
-	rf.CurrentTerm = 0 //Persistent ?!
+	rf.CurrentTerm = 0
 	rf.VotedFor = -1
 	rf.receivedHeartBeat = false
 
-	// 3B Section
 	rf.CommitIndex = -1
 	rf.LastApplied = -1
 	rf.nextIndex = make([]int, len(rf.peers))
@@ -623,17 +616,11 @@ func applyCommitted(rf *Raft) {
 	rf.mu.Lock()
 	DPrintf("lastApplied(%d) commitIndex(%d)\n", rf.LastApplied, rf.CommitIndex)
 
-	change := (rf.LastApplied != rf.CommitIndex)
-
 	for i := rf.LastApplied + 1; i <= rf.CommitIndex; i++ {
-		DPrintf("Me(%d) Apply Command(%d) of Term(%d) & Index(%d)\n", rf.me, rf.Log[i].Command, rf.Log[i].Term, i) // FIX :: RUNTIME out of bounds
+		DPrintf("Me(%d) Apply Command(%d) of Term(%d) & Index(%d)\n", rf.me, rf.Log[i].Command, rf.Log[i].Term, i)
 		msg := ApplyMsg{Command: rf.Log[i].Command, Index: i + 1}
 		rf.LastApplied++
 		rf.applyCh <- msg
-	}
-
-	if change {
-		//rf.persist()
 	}
 
 	rf.mu.Unlock()
@@ -777,7 +764,7 @@ func runLeader(rf *Raft) {
 	}
 }
 
-func updateLeaderCommitIndex(rf *Raft) { //What if they haven't committed it yet, And new leader is elected at this moment !
+func updateLeaderCommitIndex(rf *Raft) {
 	maxMatch := -1
 
 	for i := 0; i < len(rf.peers); i++ {
@@ -789,8 +776,6 @@ func updateLeaderCommitIndex(rf *Raft) { //What if they haven't committed it yet
 			maxMatch = rf.matchIndex[i]
 		}
 	}
-
-	change := false
 
 	for i := maxMatch; i >= 0; i-- {
 		if rf.Log[i].Term != rf.CurrentTerm || i <= rf.CommitIndex {
@@ -807,13 +792,8 @@ func updateLeaderCommitIndex(rf *Raft) { //What if they haven't committed it yet
 
 		if cnt > (len(rf.peers) / 2) {
 			rf.CommitIndex = i
-			change = true
 			break
 		}
-	}
-
-	if change {
-		rf.persist()
 	}
 }
 
